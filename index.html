@@ -186,8 +186,8 @@
       </div>
       <div class="field">
         <label class="title" for="colors"><span>Number of colors</span><span class="count" id="colorsOut">12</span></label>
-        <input id="colors" type="range" min="2" max="30" value="12">
-        <div class="ticks"><span>2 · bold</span><span>30 · realistic</span></div>
+        <input id="colors" type="range" min="2" max="60" value="12">
+        <div class="ticks"><span>2 · bold</span><span>30 · realistic</span><span>60 · photo-real</span></div>
       </div>
       <div class="field">
         <label class="title"><span>Detail</span></label>
@@ -195,8 +195,10 @@
           <button data-d="simple" aria-pressed="false">Simple</button>
           <button data-d="medium" aria-pressed="true">Medium</button>
           <button data-d="detailed" aria-pressed="false">Detailed</button>
+          <button data-d="real" aria-pressed="false">Photo-real</button>
         </div>
-        <div class="hint">Simple makes bigger shapes that are easier to paint. Detailed keeps more of the photo.</div>
+        <div class="hint" id="detailHint">Simple makes bigger shapes that are easier to paint. Detailed keeps more of the photo.</div>
+        <button class="btn" id="goReal" type="button" style="margin-top:10px">✨ Make it as real as possible</button>
       </div>
       <div id="status" aria-live="polite">Add a photo to get started.</div>
     </div>
@@ -344,7 +346,7 @@ const Core = (() => {
   function quantize(lab, n, k, only) {
     const rand = rng(1234567);
     const total = only ? only.length : n;             // only: only learn colors from these pixels
-    const step = Math.max(1, Math.floor(total / 40000));
+    const step = Math.max(1, Math.floor(total / (k > 30 ? 90000 : 40000)));
     const m = Math.ceil(total / step);
     const s = new Float32Array(m * 3);
     for (let i = 0; i < m; i++) { const p = only ? only[i * step] : i * step; s[i * 3] = lab[p * 3]; s[i * 3 + 1] = lab[p * 3 + 1]; s[i * 3 + 2] = lab[p * 3 + 2]; }
@@ -369,7 +371,7 @@ const Core = (() => {
     k = kk;
 
     const sums = new Float64Array(k * 3), cnt = new Int32Array(k);
-    for (let it = 0; it < 16; it++) {
+    for (let it = 0; it < (k > 30 ? 24 : 16); it++) {
       sums.fill(0); cnt.fill(0);
       for (let i = 0; i < m; i++) {
         const L = s[i * 3], A = s[i * 3 + 1], B = s[i * 3 + 2];
@@ -483,6 +485,25 @@ const Core = (() => {
     }
     const count = found.filter(f => f.n >= flat.length * 0.004).length;
     return Math.max(2, Math.min(30, count));
+  }
+
+  /* Edge-preserving smoothing in Lab: averages each pixel with nearby pixels of a similar color only,
+     so camera noise and skin texture calm down while edges, eyes, hair strands and highlights stay sharp. */
+  function bilateral(lab, w, h) {
+    const r = 2, sr2 = 2 * 9 * 9, src = lab.slice(), sp = [];
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) sp.push(dx, dy, Math.exp(-(dx * dx + dy * dy) / 8));
+    const LUT = new Float32Array(2000); for (let i = 0; i < 2000; i++) LUT[i] = Math.exp(-i / 4 / sr2 * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const p = (y * w + x) * 3, L = src[p], A = src[p + 1], B = src[p + 2];
+      let sw = 0, sL = 0, sA = 0, sB = 0;
+      for (let j = 0; j < sp.length; j += 3) {
+        const xx = x + sp[j], yy = y + sp[j + 1]; if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const q = (yy * w + xx) * 3, a = src[q] - L, b = src[q + 1] - A, c = src[q + 2] - B;
+        const d = (a * a + b * b + c * c) | 0, wt = sp[j + 2] * (d < 2000 ? LUT[d] : 0);
+        sw += wt; sL += wt * src[q]; sA += wt * src[q + 1]; sB += wt * src[q + 2];
+      }
+      lab[p] = sL / sw; lab[p + 1] = sA / sw; lab[p + 2] = sB / sw;
+    }
   }
 
   /* Replace each pixel with the most common label around it: smooths speckle into paintable shapes. */
@@ -642,6 +663,7 @@ const Core = (() => {
     const bn = base.w * base.h, blab = base.rgba === rgba ? lab : toLab(base.rgba, bn);
     let flat = null, cent = null;
     if (opts.art) { flat = flatPixels(blab, base.w, base.h); if (flat.length < bn * 0.05) flat = null; }
+    if (opts.pre && !opts.art) bilateral(blab, base.w, base.h);   // photo-real: clean noise, keep edges
     let { labels, k } = quantize(blab, bn, opts.colors, flat);
     if (opts.art) {
       mergeClose(labels, blab, bn, k);
@@ -669,7 +691,7 @@ const Core = (() => {
       }
     }
     labels = modeFilter(labels, w, h, k, opts.radius);
-    labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
+    if (!opts.single) labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
     mergeSmall(labels, w, h, k, Math.max(12, Math.round(n * opts.minFrac)));
 
     // final palette = true average of the pixels that ended up in each color, lightest first
@@ -700,13 +722,15 @@ if (typeof module !== 'undefined') module.exports = Core;
   const DETAIL = {
     simple:   { size: 460, radius: 4, minFrac: 1 / 650 },
     medium:   { size: 620, radius: 3, minFrac: 1 / 1800 },
-    detailed: { size: 800, radius: 2, minFrac: 1 / 4500 }
+    detailed: { size: 800, radius: 2, minFrac: 1 / 4500 },
+    real:     { size: 1400, radius: 1, minFrac: 1 / 40000, pre: true, single: true }
   };
   /* Artwork mode: sharper, less smoothing, so flat colors and thin shapes survive. */
   const DETAIL_ART = {
     simple:   { size: 620, radius: 2, minFrac: 1 / 1200 },
     medium:   { size: 820, radius: 1, minFrac: 1 / 3500 },
-    detailed: { size: 1000, radius: 1, minFrac: 1 / 10000 }
+    detailed: { size: 1000, radius: 1, minFrac: 1 / 10000 },
+    real:     { size: 1400, radius: 1, minFrac: 1 / 40000, single: true }
   };
   const state = { src: null, orig: null, detail: 'medium', kind: 'photo', auto: true, result: null, highlight: -1, urls: [] };
 
@@ -852,9 +876,19 @@ if (typeof module !== 'undefined') module.exports = Core;
   });
   $('detail').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
-    state.detail = b.dataset.d;
-    [...$('detail').children].forEach(x => x.setAttribute('aria-pressed', x === b));
-    later();
+    setDetail(b.dataset.d); later();
+  });
+  function setDetail(d) {
+    state.detail = d;
+    [...$('detail').children].forEach(x => x.setAttribute('aria-pressed', x.dataset.d === d));
+    $('detailHint').textContent = d === 'real'
+      ? 'Photo-real keeps fine shading, highlights and small features. Expect hundreds to thousands of small shapes: best on a big canvas (16 × 20 in or larger) with fine brushes. Use 35–60 colors.'
+      : 'Simple makes bigger shapes that are easier to paint. Detailed keeps more of the photo.';
+  }
+  $('goReal').addEventListener('click', () => {
+    setDetail('real');
+    if (+$('colors').value < 40) { $('colors').value = 40; $('colorsOut').textContent = 40; }
+    state.auto = false; generate();
   });
   ['optNums', 'optDark', 'optTint'].forEach(id => $(id).addEventListener('change', () => { drawTemplate(); refreshPrintImages(); }));
 
@@ -883,7 +917,7 @@ if (typeof module !== 'undefined') module.exports = Core;
         let found = 0;
         if (art && state.auto) { found = low ? Core.estimateColors(low.rgba, low.w, low.h) : Core.estimateColors(data, w, h); $('colors').value = found; $('colorsOut').textContent = found; }
         state.auto = false;
-        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, art, low });
+        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, pre: d.pre, single: d.single, art, low });
         state.highlight = -1;
         $('results').hidden = false;
         drawReference(); drawSwatches(); drawTemplate(); refreshPrintImages();
@@ -944,7 +978,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     }
     const dark = $('optDark').checked, big = Math.max(cv.width, cv.height);
     const lw = Math.max(1.5, cv.width / 1100) * (dark ? 1.25 : 1);
-    strokeTemplate(g, S, { lineW: lw, line: dark ? '#3a3a3a' : '#9b9b9b', nums: $('optNums').checked, text: dark ? '#222' : '#555', minF: big / 185, maxF: big / 75 });
+    strokeTemplate(g, S, { lineW: lw, line: dark ? '#3a3a3a' : '#9b9b9b', nums: $('optNums').checked, text: dark ? '#222' : '#555', minF: big / (state.detail === 'real' ? 420 : 185), maxF: big / (state.detail === 'real' ? 110 : 75) });
     g.lineWidth = lw * 1.6; g.strokeStyle = '#3a3a3a';
     g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, cv.width - g.lineWidth, cv.height - g.lineWidth);
     drawTilePreview();
