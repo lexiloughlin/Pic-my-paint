@@ -10,10 +10,17 @@ Upload one of your photos, choose how many colors you want to paint with, and ge
 
 Everything runs in the browser. Photos never leave your device.
 
+**▶ Try it live: [lexiloughlin.github.io/pic-my-paint](https://lexiloughlin.github.io/pic-my-paint/)**
+
 ## Use it
 
-Open `index.html`, or visit the GitHub Pages site for this repo once Pages is turned on
-(Settings → Pages → Deploy from a branch → `main`).
+Open the live site above in any browser (phone or computer). Nothing to install.
+
+You can also download this repo and open `index.html` directly.
+
+> **Link not working yet?** Turn on GitHub Pages once: repo **Settings → Pages →**
+> under *Build and deployment* choose **Deploy from a branch**, pick **`main`** and **`/ (root)`**,
+> then **Save**. The site goes live at the link above within a few minutes.
 
 1. Drop in a photo (or try the sample picture). For a print, poster or illustration that's already made, switch **Picture type** to **Artwork or print**: it keeps flat colors and crisp edges and picks the number of colors for you.
 2. Photo of a painting or print on a wall or table? Drag the four dots in **Crop to the artwork** onto its corners and click **Crop + straighten** to cut out the background and flatten the angle.
