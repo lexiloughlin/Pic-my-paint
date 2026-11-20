@@ -135,6 +135,11 @@
     .p-page { break-after: page; page-break-after: always; text-align: center; }
     .p-page:last-child { break-after: auto; page-break-after: auto; }
     body[data-print=template] #pKey, body[data-print=key] #pTemplate { display: none; }
+    #pLight { display: none; }
+    body[data-print=light] #pLight { display: block; }
+    body[data-print=light] #pTemplate, body[data-print=light] #pKey { display: none; }
+    #pLightImg { max-width: 100%; max-height: 9.6in; }
+    body.land #pLightImg { max-height: 7.1in; }
     #pTiles { display: none; }
     body[data-print=tiles] #pTiles { display: block; }
     body[data-print=tiles] #pTemplate, body[data-print=tiles] #pKey { display: none; }
@@ -276,6 +281,9 @@
               <label>Printer paper
                 <select id="paper"><option value="letter" selected>Letter (8.5 × 11 in)</option><option value="a4">A4</option></select>
               </label>
+              <label>Pages show
+                <select id="tileWhat"><option value="tpl" selected>Paint-by-number template</option><option value="light">Highlight &amp; shadow guide</option></select>
+              </label>
               <label>If the shapes don't match
                 <select id="fitMode"><option value="fill" selected>Fill the canvas (trim edges)</option><option value="fit">Show whole picture (blank bands)</option></select>
               </label>
@@ -292,6 +300,26 @@
         </div>
       </div>
     </section>
+
+    <section class="card">
+      <div class="cardhead">
+        <h2>Highlight &amp; shadow guide</h2>
+        <div class="actions">
+          <button class="btn" id="printLight">Print guide</button>
+          <button class="btn ghost" id="dlLight">Download guide</button>
+        </div>
+      </div>
+      <div class="hint" style="margin:0 0 10px">Trace this <b>after</b> your base colors are dry. It shows only where the light hits and where the darks go, so your highlights land in the right place.
+        <span style="display:inline-flex;gap:14px;margin-left:6px"><span><span style="display:inline-block;width:12px;height:12px;background:#fff1a6;border:2px solid #d08a00;vertical-align:-2px"></span> highlight</span><span><span style="display:inline-block;width:12px;height:12px;background:#cdd6ff;border:2px solid #2f4fd6;vertical-align:-2px"></span> shadow</span></span></div>
+      <div class="opts">
+        <label><input type="checkbox" id="lgHi" checked> Highlights</label>
+        <label><input type="checkbox" id="lgSh" checked> Shadows</label>
+        <label><input type="checkbox" id="lgAll" checked> Faint outline of everything else</label>
+        <label><input type="checkbox" id="lgNums"> Numbers on highlights/shadows</label>
+      </div>
+      <canvas id="lightCv"></canvas>
+      <div id="lightSum" class="hint"></div>
+    </section>
   </div>
 
   <footer>Paint My Photo · everything runs in your browser</footer>
@@ -304,6 +332,7 @@
     <img id="pRefImg" alt="Reference image">
     <div id="pSwatches"></div>
   </section>
+  <section class="p-page" id="pLight"><img id="pLightImg" alt="Highlight and shadow guide"></section>
   <div id="pTiles"></div>
 </div>
 <style id="pageStyle"></style>
@@ -343,7 +372,7 @@ const Core = (() => {
   }
 
   /* k-means in Lab space. Returns per-pixel labels and how many clusters were made. */
-  function quantize(lab, n, k, only) {
+  function quantize(lab, n, k, only, extremes) {
     const rand = rng(1234567);
     const total = only ? only.length : n;             // only: only learn colors from these pixels
     const step = Math.max(1, Math.floor(total / (k > 30 ? 90000 : 40000)));
@@ -369,9 +398,11 @@ const Core = (() => {
       for (let i = 0; i < m; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
     }
     k = kk;
+    const kFull = k;
+    if (extremes && k >= 8) k = Math.ceil(k * 0.7);   // leave room for highlight / shadow colors
 
-    const sums = new Float64Array(k * 3), cnt = new Int32Array(k);
-    for (let it = 0; it < (k > 30 ? 24 : 16); it++) {
+    let sums = new Float64Array(k * 3), cnt = new Int32Array(k);
+    const lloyd = iters => { for (let it = 0; it < iters; it++) {
       sums.fill(0); cnt.fill(0);
       for (let i = 0; i < m; i++) {
         const L = s[i * 3], A = s[i * 3 + 1], B = s[i * 3 + 2];
@@ -387,6 +418,34 @@ const Core = (() => {
         if (cnt[c]) { cen[c * 3] = sums[c * 3] / cnt[c]; cen[c * 3 + 1] = sums[c * 3 + 1] / cnt[c]; cen[c * 3 + 2] = sums[c * 3 + 2] / cnt[c]; }
         else { const j = Math.floor(rand() * m); cen[c * 3] = s[j * 3]; cen[c * 3 + 1] = s[j * 3 + 1]; cen[c * 3 + 2] = s[j * 3 + 2]; }
       }
+    } };
+    lloyd(k > 30 ? 24 : 16);
+    if (k < kFull) {
+      /* Highlights and deep shadows cover few pixels, so plain k-means averages them away.
+         Add the remaining colors where the palette fits worst, with brightness counting double,
+         only for color groups big enough to be real paint (not noise). */
+      const bins = new Map();
+      for (let i = 0; i < m; i++) {
+        const key = ((s[i * 3] / 4 | 0) * 70 + ((s[i * 3 + 1] + 128) / 4 | 0)) * 70 + ((s[i * 3 + 2] + 128) / 4 | 0);
+        let b = bins.get(key); if (!b) bins.set(key, b = [0, 0, 0, 0]);
+        b[0]++; b[1] += s[i * 3]; b[2] += s[i * 3 + 1]; b[3] += s[i * 3 + 2];
+      }
+      const minCount = Math.max(3, m * 0.0004);
+      const cand = [...bins.values()].filter(b => b[0] >= minCount).map(b => ({ n: b[0], L: b[1] / b[0], A: b[2] / b[0], B: b[3] / b[0], d: Infinity }));
+      const dist = (q, c) => 4 * (q.L - cen[c * 3]) ** 2 + (q.A - cen[c * 3 + 1]) ** 2 + (q.B - cen[c * 3 + 2]) ** 2;
+      for (const q of cand) for (let c = 0; c < k; c++) q.d = Math.min(q.d, dist(q, c));
+      const grown = new Float32Array(kFull * 3); grown.set(cen.subarray(0, k * 3));
+      while (k < kFull && cand.length) {
+        let best = null, bs = 0;
+        for (const q of cand) { const sc = q.d * Math.pow(q.n, 0.35); if (sc > bs) { bs = sc; best = q; } }
+        if (!best || best.d < 40) break;
+        grown[k * 3] = best.L; grown[k * 3 + 1] = best.A; grown[k * 3 + 2] = best.B;
+        cen[k * 3] = best.L; cen[k * 3 + 1] = best.A; cen[k * 3 + 2] = best.B;
+        for (const q of cand) q.d = Math.min(q.d, dist(q, k));
+        k++;
+      }
+      sums = new Float64Array(k * 3); cnt = new Int32Array(k);
+      lloyd(4);
     }
 
     const labels = new Uint8Array(n);
@@ -551,7 +610,7 @@ const Core = (() => {
   }
 
   /* Fold regions too small to paint into whichever neighbor they touch most. */
-  function mergeSmall(labels, w, h, k, minArea) {
+  function mergeSmall(labels, w, h, k, minArea, Ls, keepArea) {
     const n = w * h, counts = new Int32Array(k);
     for (let pass = 0; pass < 8; pass++) {
       const { comp, order, starts, count } = components(labels, w, h);
@@ -571,6 +630,7 @@ const Core = (() => {
         let best = -1, bc = 0;
         for (let l = 0; l < k; l++) if (l !== own && counts[l] > bc) { bc = counts[l]; best = l; }
         if (best < 0) continue;
+        if (Ls && b - a >= keepArea && Math.abs(Ls[own] - Ls[best]) > 16) continue;   // a highlight or dark accent: keep it
         for (let i = a; i < b; i++) labels[order[i]] = best;
         changed = true;
       }
@@ -664,9 +724,9 @@ const Core = (() => {
     let flat = null, cent = null;
     if (opts.art) { flat = flatPixels(blab, base.w, base.h); if (flat.length < bn * 0.05) flat = null; }
     if (opts.pre && !opts.art) bilateral(blab, base.w, base.h);   // photo-real: clean noise, keep edges
-    let { labels, k } = quantize(blab, bn, opts.colors, flat);
+    let { labels, k } = quantize(blab, bn, opts.colors, flat, opts.real);
     if (opts.art) {
-      mergeClose(labels, blab, bn, k);
+      if (!opts.real) mergeClose(labels, blab, bn, k);
       if (flat) growFromFlat(labels, blab, flat, base.w, base.h, k);
       // each color = the average of its solid areas, so soft edges and shadows don't muddy it
       cent = new Float64Array(k * 3); const cc = new Float64Array(k), add = i => { const l = labels[i]; cent[l * 3] += blab[i * 3]; cent[l * 3 + 1] += blab[i * 3 + 1]; cent[l * 3 + 2] += blab[i * 3 + 2]; cc[l]++; };
@@ -692,7 +752,10 @@ const Core = (() => {
     }
     labels = modeFilter(labels, w, h, k, opts.radius);
     if (!opts.single) labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
-    mergeSmall(labels, w, h, k, Math.max(12, Math.round(n * opts.minFrac)));
+    let Ls = null;
+    if (opts.real) { const sL = new Float64Array(k), cL = new Float64Array(k); for (let i = 0; i < n; i++) { sL[labels[i]] += lab[i * 3]; cL[labels[i]]++; } Ls = sL.map((v, i) => cL[i] ? v / cL[i] : 0); }
+    const minA = Math.max(opts.real ? 8 : 12, Math.round(n * opts.minFrac));
+    mergeSmall(labels, w, h, k, minA, Ls, Math.max(5, minA / 3 | 0));
 
     // final palette = true average of the pixels that ended up in each color, lightest first
     const sums = new Float64Array(k * 3), cnt = new Int32Array(k);
@@ -711,7 +774,23 @@ const Core = (() => {
     return { w, h, labels, palette, regions: regionLabels(labels, w, h) };
   }
 
-  return { process, estimateColors, components, colorName, rgb2lab, lab2rgb };
+  /* Which shapes are highlights (clearly lighter than what surrounds them) or shadows (clearly darker). */
+  function lightMap(labels, w, h, palette) {
+    const n = w * h, Ls = palette.map(c => { const o = new Float32Array(3); rgb2lab(c.rgb[0], c.rgb[1], c.rgb[2], o, 0); return o[0]; });
+    const { comp, count, starts } = components(labels, w, h), cap = n * 0.006;
+    const sum = new Float64Array(count), cnt = new Float64Array(count), own = new Float32Array(count);
+    for (let p = 0; p < n; p++) {
+      const c = comp[p]; own[c] = Ls[labels[p]];
+      const x = p % w;
+      if (x < w - 1 && comp[p + 1] !== c) { sum[c] += Ls[labels[p + 1]]; cnt[c]++; sum[comp[p + 1]] += Ls[labels[p]]; cnt[comp[p + 1]]++; }
+      if (p < n - w && comp[p + w] !== c) { sum[c] += Ls[labels[p + w]]; cnt[c]++; sum[comp[p + w]] += Ls[labels[p]]; cnt[comp[p + w]]++; }
+    }
+    const cls = new Int8Array(count);
+    for (let c = 0; c < count; c++) if (cnt[c] && starts[c + 1] - starts[c] < cap) { const d = own[c] - sum[c] / cnt[c]; cls[c] = d > 12 ? 1 : d < -12 ? -1 : 0; }
+    return { comp, cls };
+  }
+
+  return { process, estimateColors, components, colorName, rgb2lab, lab2rgb, lightMap };
 })();
 if (typeof module !== 'undefined') module.exports = Core;
 </script>
@@ -908,7 +987,7 @@ if (typeof module !== 'undefined') module.exports = Core;
         og.imageSmoothingQuality = 'high'; og.drawImage(img, 0, 0, w, h);
         const data = og.getImageData(0, 0, w, h).data;
         let low = null;
-        if (art && sc > 1.25) {                       // small artwork: read its colors at its own size
+        if (art && sc > 1.25 && state.detail !== 'real') {                       // small artwork: read its colors at its own size
           const lc = document.createElement('canvas'); lc.width = iw; lc.height = ih;
           const lg = lc.getContext('2d', { willReadFrequently: true });
           lg.fillStyle = '#fff'; lg.fillRect(0, 0, iw, ih); lg.drawImage(img, 0, 0);
@@ -917,10 +996,11 @@ if (typeof module !== 'undefined') module.exports = Core;
         let found = 0;
         if (art && state.auto) { found = low ? Core.estimateColors(low.rgba, low.w, low.h) : Core.estimateColors(data, w, h); $('colors').value = found; $('colorsOut').textContent = found; }
         state.auto = false;
-        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, pre: d.pre, single: d.single, art, low });
+        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, pre: d.pre, single: d.single, real: state.detail === 'real', art, low });
+        state.light = null;
         state.highlight = -1;
         $('results').hidden = false;
-        drawReference(); drawSwatches(); drawTemplate(); refreshPrintImages();
+        drawReference(); drawSwatches(); drawTemplate(); drawLight(); refreshPrintImages();
         const r = state.result;
         status((found ? `Found about ${found} colors in this artwork (move the slider to change it). ` : '') + `Done: ${r.palette.length} colors, ${r.regions.length} shapes to paint.`);
       } catch (err) { console.error(err); status('Something went wrong reading that photo. Try another one.', true); }
@@ -1015,6 +1095,52 @@ if (typeof module !== 'undefined') module.exports = Core;
     }
   }
 
+  /* ---------- highlight & shadow guide ---------- */
+  function edgePath(g, S, pred) {
+    const { w, h } = state.result;
+    g.beginPath();
+    for (let y = 0; y < h - 1; y++) { let st = -1; const row = y * w;
+      for (let x = 0; x <= w; x++) { const on = x < w && pred(row + x, row + w + x);
+        if (on && st < 0) st = x; else if (!on && st >= 0) { g.moveTo(st * S, (y + 1) * S); g.lineTo(x * S, (y + 1) * S); st = -1; } } }
+    for (let x = 0; x < w - 1; x++) { let st = -1;
+      for (let y = 0; y <= h; y++) { const on = y < h && pred(y * w + x, y * w + x + 1);
+        if (on && st < 0) st = y; else if (!on && st >= 0) { g.moveTo((x + 1) * S, st * S); g.lineTo((x + 1) * S, y * S); st = -1; } } }
+  }
+  function lightGuide(g, S, o) {
+    const r = state.result;
+    if (!state.light) state.light = Core.lightMap(r.labels, r.w, r.h, r.palette);
+    const { comp, cls } = state.light, { w, h, labels } = r;
+    const hiOn = $('lgHi').checked, shOn = $('lgSh').checked;
+    const kind = p => { const c = cls[comp[p]]; return c === 1 && hiOn ? 1 : c === -1 && shOn ? -1 : 0; };
+    // fills
+    const t = document.createElement('canvas'); t.width = w; t.height = h;
+    const tg = t.getContext('2d'), im = tg.createImageData(w, h), px = im.data;
+    for (let p = 0; p < w * h; p++) { const k = kind(p), c = k === 1 ? [255, 241, 166] : k === -1 ? [205, 214, 255] : [255, 255, 255];
+      px[p * 4] = c[0]; px[p * 4 + 1] = c[1]; px[p * 4 + 2] = c[2]; px[p * 4 + 3] = 255; }
+    tg.putImageData(im, 0, 0); g.imageSmoothingEnabled = false; g.drawImage(t, 0, 0, w * S, h * S);
+    g.lineCap = 'round';
+    if ($('lgAll').checked) { edgePath(g, S, (p, q) => labels[p] !== labels[q] && kind(p) === 0 && kind(q) === 0); g.lineWidth = o.lineW * 0.6; g.strokeStyle = '#cfcfcf'; g.stroke(); }
+    edgePath(g, S, (p, q) => comp[p] !== comp[q] && (kind(p) === -1 || kind(q) === -1)); g.lineWidth = o.lineW * 1.6; g.strokeStyle = '#2f4fd6'; g.stroke();
+    edgePath(g, S, (p, q) => comp[p] !== comp[q] && (kind(p) === 1 || kind(q) === 1)); g.lineWidth = o.lineW * 1.6; g.strokeStyle = '#d08a00'; g.stroke();
+    if ($('lgNums').checked) {
+      g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#333';
+      for (const reg of r.regions) { const p = reg.y * w + reg.x; if (!kind(p)) continue;
+        const txt = String(reg.label + 1), fs = Math.min(o.maxF, Math.max(o.minF, reg.d * S * (txt.length > 1 ? 0.8 : 1.05)));
+        g.font = `${fs.toFixed(1)}px Helvetica, Arial, sans-serif`; g.fillText(txt, (reg.x + 0.5) * S, (reg.y + 0.55) * S); }
+    }
+  }
+  function drawLight() {
+    const r = state.result; if (!r) return;
+    const S = Math.max(2, Math.round(2400 / Math.max(r.w, r.h))), cv = $('lightCv');
+    cv.width = r.w * S; cv.height = r.h * S;
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+    const big = Math.max(cv.width, cv.height);
+    lightGuide(g, S, { lineW: Math.max(1.5, cv.width / 1100), minF: big / 420, maxF: big / 110 });
+    g.lineWidth = 3; g.strokeStyle = '#3a3a3a'; g.strokeRect(1.5, 1.5, cv.width - 3, cv.height - 3);
+    const { cls } = state.light; let hi = 0, sh = 0; for (const c of cls) { if (c === 1) hi++; else if (c === -1) sh++; }
+    $('lightSum').textContent = `${hi} highlight shapes · ${sh} shadow shapes`;
+  }
+
   /* ---------- canvas-size tiled printing ---------- */
   const PAPER = { letter: { w: 8.5, h: 11, css: 'letter', name: 'Letter' }, a4: { w: 8.27, h: 11.69, css: 'A4', name: 'A4' } };
   const MARGIN = 0.4, LABEL = 0.2;                  // inches
@@ -1046,7 +1172,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     g.fillStyle = '#ece6d8'; g.fillRect(0, 0, cv.width, cv.height);
     g.save(); g.beginPath(); g.rect(0, 0, p.cw * P, p.ch * P); g.clip();
     g.fillStyle = '#fff'; g.fillRect(0, 0, p.cw * P, p.ch * P);
-    g.drawImage($('tplCv'), p.ix * P, p.iy * P, r.w * p.sc * P, r.h * p.sc * P);
+    g.drawImage($($('tileWhat').value === 'light' && $('lightCv').width > 1 ? 'lightCv' : 'tplCv'), p.ix * P, p.iy * P, r.w * p.sc * P, r.h * p.sc * P);
     g.restore();
     g.lineWidth = 3; g.strokeStyle = '#2b2a27'; g.strokeRect(1.5, 1.5, p.cw * P - 3, p.ch * P - 3);
     g.setLineDash([10, 8]); g.lineWidth = 2.5; g.strokeStyle = '#d9482b'; g.beginPath();
@@ -1079,7 +1205,8 @@ if (typeof module !== 'undefined') module.exports = Core;
       const g = cv.getContext('2d');
       g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
       g.save(); g.translate((p.ix - x0) * dpi, (p.iy - y0) * dpi);
-      strokeTemplate(g, S, { lineW: dpi * 0.012, line: '#444', nums: $('optNums').checked, text: '#333', minF: dpi * 0.1, maxF: dpi * 0.32 });
+      if ($('tileWhat').value === 'light') lightGuide(g, S, { lineW: dpi * 0.012, minF: dpi * 0.1, maxF: dpi * 0.32 });
+      else strokeTemplate(g, S, { lineW: dpi * 0.012, line: '#444', nums: $('optNums').checked, text: '#333', minF: dpi * 0.1, maxF: dpi * 0.32 });
       g.lineWidth = dpi * 0.012; g.strokeStyle = '#444'; g.strokeRect(0, 0, r.w * S, r.h * S);   // edge of the picture
       g.restore();
       // dashed = cut line between sheets, solid = edge of the canvas
@@ -1130,7 +1257,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     const r = state.result; if (!r) return;
     state.urls.forEach(u => URL.revokeObjectURL(u)); state.urls = [];
     const set = (cv, img) => cv.toBlob(b => { const u = URL.createObjectURL(b); state.urls.push(u); img.src = u; }, 'image/png');
-    set($('tplCv'), $('pTemplateImg')); set(bigReference(), $('pRefImg'));
+    set($('tplCv'), $('pTemplateImg')); set(bigReference(), $('pRefImg')); if ($('lightCv').width > 1) set($('lightCv'), $('pLightImg'));
     const land = r.w > r.h * 1.08;
     document.body.classList.toggle('land', land);
     $('pSwatches').innerHTML = r.palette.map((c, i) =>
@@ -1139,11 +1266,15 @@ if (typeof module !== 'undefined') module.exports = Core;
   function print(what) {
     document.body.dataset.print = what;
     $('pageStyle').textContent = `@page { size: ${document.body.classList.contains('land') ? 'landscape' : 'portrait'}; margin: 0.5in; }`;
-    const imgs = [$('pTemplateImg'), $('pRefImg')];
+    const imgs = what === 'light' ? [$('pLightImg')] : [$('pTemplateImg'), $('pRefImg')];
     Promise.all(imgs.map(i => i.complete && i.naturalWidth ? 0 : new Promise(res => { i.onload = i.onerror = res; }))).then(() => window.print());
   }
   $('printAll').addEventListener('click', () => print('all'));
   $('printTpl').addEventListener('click', () => print('template'));
+  $('printLight').addEventListener('click', () => print('light'));
+  $('dlLight').addEventListener('click', () => download($('lightCv'), 'paint-my-photo-highlight-guide.png'));
+  ['lgHi', 'lgSh', 'lgAll', 'lgNums'].forEach(id => $(id).addEventListener('change', () => { drawLight(); refreshPrintImages(); }));
+  $('tileWhat').addEventListener('change', () => drawTilePreview());
 })();
 </script>
 </body>
