@@ -436,6 +436,33 @@ const Core = (() => {
     for (let i = 0; i < n; i++) labels[i] = to[labels[i]];
   }
 
+  /* Artwork: pixels on the soft edge between two shapes are a blend of both colors. Instead of letting
+     the blend become its own color (a halo around every shape), give each edge pixel to whichever
+     touching shape it looks most like, growing outward from the solid areas. */
+  function growFromFlat(labels, lab, flat, w, h, k) {
+    const n = w * h, known = new Uint8Array(n), m = new Float64Array(k * 3), c = new Float64Array(k);
+    for (let j = 0; j < flat.length; j++) { const i = flat[j], l = labels[i]; known[i] = 1; m[l * 3] += lab[i * 3]; m[l * 3 + 1] += lab[i * 3 + 1]; m[l * 3 + 2] += lab[i * 3 + 2]; c[l]++; }
+    for (let j = 0; j < k; j++) if (c[j]) { m[j * 3] /= c[j]; m[j * 3 + 1] /= c[j]; m[j * 3 + 2] /= c[j]; }
+    // an edge pixel that is already a close match for its own color is kept (protects thin lines)
+    let todo = [];
+    for (let i = 0; i < n; i++) if (!known[i]) {
+      const l = labels[i];
+      if (c[l] && (lab[i * 3] - m[l * 3]) ** 2 + (lab[i * 3 + 1] - m[l * 3 + 1]) ** 2 + (lab[i * 3 + 2] - m[l * 3 + 2]) ** 2 < 30) known[i] = 1; else todo.push(i);
+    }
+    for (let pass = 0; pass < 80 && todo.length; pass++) {
+      const next = [], set = [];
+      for (const p of todo) {
+        const x = p % w; let best = -1, bd = Infinity;
+        const tryQ = q => { if (!known[q]) return; const l = labels[q], d = (lab[p * 3] - m[l * 3]) ** 2 + (lab[p * 3 + 1] - m[l * 3 + 1]) ** 2 + (lab[p * 3 + 2] - m[l * 3 + 2]) ** 2; if (d < bd) { bd = d; best = l; } };
+        if (x > 0) tryQ(p - 1); if (x < w - 1) tryQ(p + 1); if (p >= w) tryQ(p - w); if (p < n - w) tryQ(p + w);
+        if (best >= 0) set.push(p, best); else next.push(p);
+      }
+      if (!set.length) break;
+      for (let j = 0; j < set.length; j += 2) { labels[set[j]] = set[j + 1]; known[set[j]] = 1; }
+      todo = next;
+    }
+  }
+
   /* Roughly how many distinct flat colors a piece of artwork uses. */
   function estimateColors(rgba, w, h) {
     const n = w * h, lab = new Float32Array(n * 3);
@@ -603,14 +630,44 @@ const Core = (() => {
 
   const hex = c => '#' + c.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
 
-  /* rgba: Uint8ClampedArray from a canvas. opts: {colors, radius, minFrac} */
+  const toLab = (rgba, n) => { const lab = new Float32Array(n * 3); for (let i = 0; i < n; i++) rgb2lab(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], lab, i * 3); return lab; };
+
+  /* rgba: Uint8ClampedArray from a canvas. opts: {colors, radius, minFrac, art, low}
+     low = {rgba, w, h}: the same picture at its own small size. A small artwork is labeled there
+     (enlarging first would smear its edges into extra colors), then the shapes are redrawn smoothly
+     at full size, letting each pixel choose only among the shapes next to it. */
   function process(rgba, w, h, opts) {
-    const n = w * h, lab = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) rgb2lab(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], lab, i * 3);
-    let flat = null;
-    if (opts.art) { flat = flatPixels(lab, w, h); if (flat.length < n * 0.05) flat = null; }
-    let { labels, k } = quantize(lab, n, opts.colors, flat);
-    if (opts.art) mergeClose(labels, lab, n, k);
+    const n = w * h, lab = toLab(rgba, n);
+    const base = opts.art && opts.low ? opts.low : { rgba, w, h };
+    const bn = base.w * base.h, blab = base.rgba === rgba ? lab : toLab(base.rgba, bn);
+    let flat = null, cent = null;
+    if (opts.art) { flat = flatPixels(blab, base.w, base.h); if (flat.length < bn * 0.05) flat = null; }
+    let { labels, k } = quantize(blab, bn, opts.colors, flat);
+    if (opts.art) {
+      mergeClose(labels, blab, bn, k);
+      if (flat) growFromFlat(labels, blab, flat, base.w, base.h, k);
+      // each color = the average of its solid areas, so soft edges and shadows don't muddy it
+      cent = new Float64Array(k * 3); const cc = new Float64Array(k), add = i => { const l = labels[i]; cent[l * 3] += blab[i * 3]; cent[l * 3 + 1] += blab[i * 3 + 1]; cent[l * 3 + 2] += blab[i * 3 + 2]; cc[l]++; };
+      if (flat) for (let j = 0; j < flat.length; j++) add(flat[j]);
+      const have = cc.slice();
+      for (let i = 0; i < bn; i++) if (!have[labels[i]]) add(i);
+      for (let j = 0; j < k; j++) if (cc[j]) { cent[j * 3] /= cc[j]; cent[j * 3 + 1] /= cc[j]; cent[j * 3 + 2] /= cc[j]; }
+    }
+    if (base.rgba !== rgba) {
+      const small = labels, bw = base.w, bh = base.h; labels = new Uint8Array(n);
+      for (let y = 0; y < h; y++) {
+        const ly = Math.min(bh - 1, y * bh / h | 0);
+        for (let x = 0; x < w; x++) {
+          const lx = Math.min(bw - 1, x * bw / w | 0), p = (y * w + x) * 3;
+          let best = small[ly * bw + lx], bd = Infinity;
+          for (let dy = -1; dy <= 1; dy++) { const yy = ly + dy; if (yy < 0 || yy >= bh) continue;
+            for (let dx = -1; dx <= 1; dx++) { const xx = lx + dx; if (xx < 0 || xx >= bw) continue;
+              const l = small[yy * bw + xx], d = (lab[p] - cent[l * 3]) ** 2 + (lab[p + 1] - cent[l * 3 + 1]) ** 2 + (lab[p + 2] - cent[l * 3 + 2]) ** 2;
+              if (d < bd) { bd = d; best = l; } } }
+          labels[y * w + x] = best;
+        }
+      }
+    }
     labels = modeFilter(labels, w, h, k, opts.radius);
     labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
     mergeSmall(labels, w, h, k, Math.max(12, Math.round(n * opts.minFrac)));
@@ -619,11 +676,7 @@ const Core = (() => {
     const sums = new Float64Array(k * 3), cnt = new Int32Array(k);
     for (let i = 0; i < n; i++) { const l = labels[i]; sums[l * 3] += lab[i * 3]; sums[l * 3 + 1] += lab[i * 3 + 1]; sums[l * 3 + 2] += lab[i * 3 + 2]; cnt[l]++; }
     const used = [];
-    if (flat) {                                       // artwork: take each color from its flat areas so soft edges don't muddy it
-      const fs = new Float64Array(k * 3), fc = new Int32Array(k);
-      for (let j = 0; j < flat.length; j++) { const i = flat[j], l = labels[i]; fs[l * 3] += lab[i * 3]; fs[l * 3 + 1] += lab[i * 3 + 1]; fs[l * 3 + 2] += lab[i * 3 + 2]; fc[l]++; }
-      for (let c = 0; c < k; c++) if (fc[c] && cnt[c]) { sums[c * 3] = fs[c * 3] / fc[c] * cnt[c]; sums[c * 3 + 1] = fs[c * 3 + 1] / fc[c] * cnt[c]; sums[c * 3 + 2] = fs[c * 3 + 2] / fc[c] * cnt[c]; }
-    }
+    if (cent) for (let c = 0; c < k; c++) { sums[c * 3] = cent[c * 3] * cnt[c]; sums[c * 3 + 1] = cent[c * 3 + 1] * cnt[c]; sums[c * 3 + 2] = cent[c * 3 + 2] * cnt[c]; }
     for (let c = 0; c < k; c++) if (cnt[c]) used.push({ old: c, L: sums[c * 3] / cnt[c], a: sums[c * 3 + 1] / cnt[c], b: sums[c * 3 + 2] / cnt[c], n: cnt[c] });
     used.sort((p, q) => q.L - p.L);
     const remap = new Uint8Array(k);
@@ -651,9 +704,9 @@ if (typeof module !== 'undefined') module.exports = Core;
   };
   /* Artwork mode: sharper, less smoothing, so flat colors and thin shapes survive. */
   const DETAIL_ART = {
-    simple:   { size: 620, radius: 2, minFrac: 1 / 2500 },
-    medium:   { size: 820, radius: 1, minFrac: 1 / 8000 },
-    detailed: { size: 1000, radius: 1, minFrac: 1 / 16000 }
+    simple:   { size: 620, radius: 2, minFrac: 1 / 1200 },
+    medium:   { size: 820, radius: 1, minFrac: 1 / 3500 },
+    detailed: { size: 1000, radius: 1, minFrac: 1 / 10000 }
   };
   const state = { src: null, orig: null, detail: 'medium', kind: 'photo', auto: true, result: null, highlight: -1, urls: [] };
 
@@ -734,7 +787,8 @@ if (typeof module !== 'undefined') module.exports = Core;
     const sg = sc0.getContext('2d', { willReadFrequently: true });
     sg.fillStyle = '#fff'; sg.fillRect(0, 0, sw, sh); sg.drawImage(state.orig, 0, 0, sw, sh);
     const src = sg.getImageData(0, 0, sw, sh).data;
-    const P = crop.pts.map(([x, y]) => [x * (sw - 1), y * (sh - 1)]), len = (a, b) => Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]);
+    const mx = crop.pts.reduce((a, q) => a + q[0], 0) / 4, my = crop.pts.reduce((a, q) => a + q[1], 0) / 4;
+    const P = crop.pts.map(([x, y]) => [(x + (mx - x) * 0.03) * (sw - 1), (y + (my - y) * 0.03) * (sh - 1)]), len = (a, b) => Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]);
     let W = (len(0, 1) + len(3, 2)) / 2, H = (len(0, 3) + len(1, 2)) / 2;
     const k = Math.min(1, 1600 / Math.max(W, H)); W = Math.max(20, Math.round(W * k)); H = Math.max(20, Math.round(H * k));
     const h = homography([[0, 0], [W, 0], [W, H], [0, H]], P);
@@ -819,10 +873,17 @@ if (typeof module !== 'undefined') module.exports = Core;
         og.fillStyle = '#fff'; og.fillRect(0, 0, w, h);
         og.imageSmoothingQuality = 'high'; og.drawImage(img, 0, 0, w, h);
         const data = og.getImageData(0, 0, w, h).data;
+        let low = null;
+        if (art && sc > 1.25) {                       // small artwork: read its colors at its own size
+          const lc = document.createElement('canvas'); lc.width = iw; lc.height = ih;
+          const lg = lc.getContext('2d', { willReadFrequently: true });
+          lg.fillStyle = '#fff'; lg.fillRect(0, 0, iw, ih); lg.drawImage(img, 0, 0);
+          low = { rgba: lg.getImageData(0, 0, iw, ih).data, w: iw, h: ih };
+        }
         let found = 0;
-        if (art && state.auto) { found = Core.estimateColors(data, w, h); $('colors').value = found; $('colorsOut').textContent = found; }
+        if (art && state.auto) { found = low ? Core.estimateColors(low.rgba, low.w, low.h) : Core.estimateColors(data, w, h); $('colors').value = found; $('colorsOut').textContent = found; }
         state.auto = false;
-        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, art });
+        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, art, low });
         state.highlight = -1;
         $('results').hidden = false;
         drawReference(); drawSwatches(); drawTemplate(); refreshPrintImages();
