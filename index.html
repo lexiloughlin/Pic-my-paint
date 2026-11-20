@@ -110,6 +110,18 @@
 
   .opts { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; font-size: 14px; }
   .opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .tilebox { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .tilebox h3 { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 19px; margin: 0 0 4px; }
+  .tilegrid { display: grid; grid-template-columns: minmax(250px, 1fr) 1.2fr; gap: 22px; margin-top: 14px; align-items: start; }
+  @media (max-width: 760px) { .tilegrid { grid-template-columns: 1fr; } }
+  .row { display: flex; gap: 10px; align-items: end; margin-bottom: 12px; flex-wrap: wrap; }
+  .row label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; flex: 1; min-width: 90px; }
+  .row input, .row select { font: inherit; padding: 8px; border: 1px solid #cfc6b4; border-radius: 8px; background: #fff; width: 100%; }
+  .row .x { padding-bottom: 9px; color: var(--soft); }
+  #tileSum { background: #fbf3e2; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin: 4px 0 12px; }
+  #tileSum b { color: var(--accent-dark); }
+  #tilePrev { border: 1px solid var(--line); border-radius: 8px; max-width: 100%; margin: 0 auto; }
+  ol.steps { margin: 12px 0 0; padding-left: 20px; font-size: 13px; color: var(--soft); }
   footer { margin-top: 26px; color: var(--soft); font-size: 13px; text-align: center; }
   [hidden] { display: none !important; }
 
@@ -122,6 +134,14 @@
     .p-page { break-after: page; page-break-after: always; text-align: center; }
     .p-page:last-child { break-after: auto; page-break-after: auto; }
     body[data-print=template] #pKey, body[data-print=key] #pTemplate { display: none; }
+    #pTiles { display: none; }
+    body[data-print=tiles] #pTiles { display: block; }
+    body[data-print=tiles] #pTemplate, body[data-print=tiles] #pKey { display: none; }
+    .tile-page { break-after: page; page-break-after: always; break-inside: avoid; }
+    .tile-page:last-child { break-after: auto; page-break-after: auto; }
+    .tile-label { height: 0.2in; line-height: 0.2in; font-size: 8pt; display: flex; gap: 12px; align-items: center; white-space: nowrap; overflow: hidden; }
+    .tile-label .inch { display: inline-block; width: 1in; height: 6px; border: 1px solid #000; border-top: 0; box-sizing: border-box; }
+    #pTiles canvas { border: 0; border-radius: 0; display: block; }
     body[data-print=template] #pTemplate { break-after: auto; page-break-after: auto; }
     #pTemplateImg { max-width: 100%; max-height: 9.6in; }
     body.land #pTemplateImg { max-height: 7.1in; }
@@ -208,6 +228,46 @@
         <label><input type="checkbox" id="optTint"> Faint color tint</label>
       </div>
       <canvas id="tplCv"></canvas>
+
+      <div class="tilebox">
+        <h3>Print at canvas size</h3>
+        <div class="hint" style="margin:0">Enter your canvas size and the template is split across regular printer paper at true size, ready to tape together and trace through carbon paper.</div>
+        <div class="tilegrid">
+          <div>
+            <div class="row">
+              <label>Canvas size
+                <select id="cvPreset">
+                  <option value="8x10">8 × 10 in</option><option value="9x12">9 × 12 in</option><option value="11x14">11 × 14 in</option>
+                  <option value="12x12">12 × 12 in</option><option value="12x16">12 × 16 in</option><option value="16x20" selected>16 × 20 in</option>
+                  <option value="18x24">18 × 24 in</option><option value="20x24">20 × 24 in</option><option value="24x30">24 × 30 in</option>
+                  <option value="24x36">24 × 36 in</option><option value="custom">Custom…</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label>Short side (in)<input id="cvW" type="number" min="2" max="120" step="0.25" value="16"></label>
+              <span class="x">×</span>
+              <label>Long side (in)<input id="cvH" type="number" min="2" max="120" step="0.25" value="20"></label>
+            </div>
+            <div class="row">
+              <label>Printer paper
+                <select id="paper"><option value="letter" selected>Letter (8.5 × 11 in)</option><option value="a4">A4</option></select>
+              </label>
+              <label>If the shapes don't match
+                <select id="fitMode"><option value="fill" selected>Fill the canvas (trim edges)</option><option value="fit">Show whole picture (blank bands)</option></select>
+              </label>
+            </div>
+            <div id="tileSum"></div>
+            <button class="btn" id="printTiles">Print canvas-size pages</button>
+            <ol class="steps">
+              <li>In the print window, set <b>Scale to 100%</b> (not "Fit to page"). The first sheet has a 1-inch bar you can check with a ruler.</li>
+              <li>Cut along the dashed lines, then tape the sheets together using the labels (A1, B1, …).</li>
+              <li>Lay carbon paper on the canvas, the taped template on top, and trace the lines.</li>
+            </ol>
+          </div>
+          <canvas id="tilePrev"></canvas>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -221,6 +281,7 @@
     <img id="pRefImg" alt="Reference image">
     <div id="pSwatches"></div>
   </section>
+  <div id="pTiles"></div>
 </div>
 <style id="pageStyle"></style>
 
@@ -635,7 +696,17 @@ if (typeof module !== 'undefined') module.exports = Core;
       state.highlight = -1; paintLabels(t, 0.78); state.highlight = keep;
       g.imageSmoothingEnabled = false; g.drawImage(t, 0, 0, cv.width, cv.height);
     }
-    const dark = $('optDark').checked;
+    const dark = $('optDark').checked, big = Math.max(cv.width, cv.height);
+    const lw = Math.max(1.5, cv.width / 1100) * (dark ? 1.25 : 1);
+    strokeTemplate(g, S, { lineW: lw, line: dark ? '#3a3a3a' : '#9b9b9b', nums: $('optNums').checked, text: dark ? '#222' : '#555', minF: big / 185, maxF: big / 75 });
+    g.lineWidth = lw * 1.6; g.strokeStyle = '#3a3a3a';
+    g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, cv.width - g.lineWidth, cv.height - g.lineWidth);
+    drawTilePreview();
+  }
+
+  /* Draw outlines + numbers at S output pixels per working pixel (S can be fractional). */
+  function strokeTemplate(g, S, o) {
+    const { w, h, labels, regions } = state.result;
     g.beginPath();
     for (let y = 0; y < h - 1; y++) {               // horizontal edges
       let st = -1; const row = y * w;
@@ -653,25 +724,109 @@ if (typeof module !== 'undefined') module.exports = Core;
         else if (!diff && st >= 0) { g.moveTo((x + 1) * S, st * S); g.lineTo((x + 1) * S, y * S); st = -1; }
       }
     }
-    g.lineCap = 'round';
-    g.lineWidth = Math.max(1.5, cv.width / 1100) * (dark ? 1.25 : 1);
-    g.strokeStyle = dark ? '#3a3a3a' : '#9b9b9b';
-    g.stroke();
-    g.lineWidth *= 1.6; g.strokeStyle = '#3a3a3a';
-    g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, cv.width - g.lineWidth, cv.height - g.lineWidth);
-
-    if ($('optNums').checked) {
-      const big = Math.max(cv.width, cv.height), minF = big / 185, maxF = big / 75;
-      g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillStyle = dark ? '#222' : '#555';
-      for (const reg of regions) {
-        const txt = String(reg.label + 1);
-        const fs = Math.min(maxF, Math.max(minF, reg.d * S * (txt.length > 1 ? 0.8 : 1.05)));
-        g.font = `${fs.toFixed(1)}px Helvetica, Arial, sans-serif`;
-        g.fillText(txt, (reg.x + 0.5) * S, (reg.y + 0.55) * S);
-      }
+    g.lineCap = 'round'; g.lineWidth = o.lineW; g.strokeStyle = o.line; g.stroke();
+    if (!o.nums) return;
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = o.text;
+    for (const reg of regions) {
+      const txt = String(reg.label + 1);
+      const fs = Math.min(o.maxF, Math.max(o.minF, reg.d * S * (txt.length > 1 ? 0.8 : 1.05)));
+      g.font = `${fs.toFixed(1)}px Helvetica, Arial, sans-serif`;
+      g.fillText(txt, (reg.x + 0.5) * S, (reg.y + 0.55) * S);
     }
   }
+
+  /* ---------- canvas-size tiled printing ---------- */
+  const PAPER = { letter: { w: 8.5, h: 11, css: 'letter', name: 'Letter' }, a4: { w: 8.27, h: 11.69, css: 'A4', name: 'A4' } };
+  const MARGIN = 0.4, LABEL = 0.2;                  // inches
+  function tilePlan() {
+    const r = state.result; if (!r) return null;
+    let cw = +$('cvW').value, ch = +$('cvH').value;
+    if (!(cw >= 2 && ch >= 2 && cw <= 120 && ch <= 120)) return null;
+    // turn the canvas the same way as the picture
+    if ((r.w > r.h && cw < ch) || (r.h > r.w && cw > ch)) [cw, ch] = [ch, cw];
+    const pp = PAPER[$('paper').value], a = pp.w - 1.1, b = pp.h - 1.1;
+    const n = (tw, th) => Math.ceil(cw / tw - 1e-6) * Math.ceil(ch / th - 1e-6);
+    const nP = n(a, b), nL = n(b, a), pLand = nL < nP || (nL === nP && cw > ch);
+    const tw = pLand ? b : a, th = pLand ? a : b;
+    const fill = $('fitMode').value === 'fill';
+    const sc = fill ? Math.max(cw / r.w, ch / r.h) : Math.min(cw / r.w, ch / r.h);   // inches per working pixel
+    return { cw, ch, pp, pLand, tw, th, cols: Math.ceil(cw / tw - 1e-6), rows: Math.ceil(ch / th - 1e-6), sc, ix: (cw - r.w * sc) / 2, iy: (ch - r.h * sc) / 2 };
+  }
+  const colName = c => String.fromCharCode(65 + c % 26);
+
+  function drawTilePreview() {
+    const p = tilePlan(), cv = $('tilePrev'), sum = $('tileSum');
+    $('printTiles').disabled = !p;
+    if (!p) { sum.textContent = 'Enter a canvas size between 2 and 120 inches.'; return; }
+    const r = state.result, totW = p.cols * p.tw, totH = p.rows * p.th;
+    const P = Math.min(920 / totW, 840 / totH);     // preview pixels per inch (drawn at 2x)
+    cv.width = Math.round(totW * P); cv.height = Math.round(totH * P);
+    cv.style.width = cv.width / 2 + 'px';
+    const g = cv.getContext('2d');
+    g.fillStyle = '#ece6d8'; g.fillRect(0, 0, cv.width, cv.height);
+    g.save(); g.beginPath(); g.rect(0, 0, p.cw * P, p.ch * P); g.clip();
+    g.fillStyle = '#fff'; g.fillRect(0, 0, p.cw * P, p.ch * P);
+    g.drawImage($('tplCv'), p.ix * P, p.iy * P, r.w * p.sc * P, r.h * p.sc * P);
+    g.restore();
+    g.lineWidth = 3; g.strokeStyle = '#2b2a27'; g.strokeRect(1.5, 1.5, p.cw * P - 3, p.ch * P - 3);
+    g.setLineDash([10, 8]); g.lineWidth = 2.5; g.strokeStyle = '#d9482b'; g.beginPath();
+    for (let c = 1; c < p.cols; c++) { g.moveTo(c * p.tw * P, 0); g.lineTo(c * p.tw * P, cv.height); }
+    for (let w = 1; w < p.rows; w++) { g.moveTo(0, w * p.th * P); g.lineTo(cv.width, w * p.th * P); }
+    g.stroke(); g.setLineDash([]);
+    const fs = Math.max(20, Math.min(44, p.tw * P / 4));
+    g.font = `bold ${fs}px Helvetica, Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (let w = 0; w < p.rows; w++) for (let c = 0; c < p.cols; c++) {
+      const x = (c * p.tw + Math.min(p.tw, p.cw - c * p.tw) / 2) * P, y = (w * p.th + Math.min(p.th, p.ch - w * p.th) / 2) * P;
+      g.fillStyle = 'rgba(255,255,255,.88)'; g.beginPath(); g.arc(x, y, fs * 0.95, 0, 7); g.fill();
+      g.fillStyle = '#b23619'; g.fillText(colName(c) + (w + 1), x, y + fs * 0.05);
+    }
+    const total = p.cols * p.rows;
+    sum.innerHTML = `<b>${total} sheet${total > 1 ? 's' : ''}</b> of ${p.pp.name} paper, ${p.pLand ? 'sideways (landscape)' : 'upright (portrait)'}: ${p.cols} across × ${p.rows} down for a ${p.cw} × ${p.ch} in canvas.`;
+  }
+
+  function buildTiles() {
+    const p = tilePlan(), r = state.result, box = $('pTiles'); box.innerHTML = '';
+    const total = p.cols * p.rows, dpi = total > 20 ? 110 : 150, S = p.sc * dpi;
+    let k = 0;
+    for (let row = 0; row < p.rows; row++) for (let col = 0; col < p.cols; col++) {
+      k++;
+      const x0 = col * p.tw, y0 = row * p.th, wIn = Math.min(p.tw, p.cw - x0), hIn = Math.min(p.th, p.ch - y0);
+      const page = document.createElement('div'); page.className = 'tile-page';
+      page.innerHTML = `<div class="tile-label"><b>${colName(col)}${row + 1}</b><span>column ${colName(col)} of ${colName(p.cols - 1)}, row ${row + 1} of ${p.rows} · sheet ${k} of ${total} · ${p.cw} × ${p.ch} in canvas</span>${k === 1 ? '<span class="inch"></span><span>this bar = 1 inch</span>' : ''}</div>`;
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(wIn * dpi); cv.height = Math.round(hIn * dpi);
+      cv.style.width = wIn + 'in'; cv.style.height = hIn + 'in';
+      const g = cv.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+      g.save(); g.translate((p.ix - x0) * dpi, (p.iy - y0) * dpi);
+      strokeTemplate(g, S, { lineW: dpi * 0.012, line: '#444', nums: $('optNums').checked, text: '#333', minF: dpi * 0.1, maxF: dpi * 0.32 });
+      g.lineWidth = dpi * 0.012; g.strokeStyle = '#444'; g.strokeRect(0, 0, r.w * S, r.h * S);   // edge of the picture
+      g.restore();
+      // dashed = cut line between sheets, solid = edge of the canvas
+      const W = cv.width, H = cv.height, edge = (dash, x1, y1, x2, y2) => {
+        g.setLineDash(dash ? [dpi * 0.08, dpi * 0.06] : []); g.lineWidth = dash ? 1.5 : 3; g.strokeStyle = dash ? '#999' : '#111';
+        g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+      };
+      edge(col > 0, 1, 0, 1, H); edge(row > 0, 0, 1, W, 1);
+      edge(col < p.cols - 1, W - 1, 0, W - 1, H); edge(row < p.rows - 1, 0, H - 1, W, H - 1);
+      page.appendChild(cv); box.appendChild(page);
+    }
+    return p;
+  }
+  function syncPreset() {
+    const v = $('cvPreset').value;
+    if (v !== 'custom') { const [a, b] = v.split('x'); $('cvW').value = a; $('cvH').value = b; }
+    drawTilePreview();
+  }
+  $('cvPreset').addEventListener('change', syncPreset);
+  ['cvW', 'cvH'].forEach(id => $(id).addEventListener('input', () => { $('cvPreset').value = 'custom'; drawTilePreview(); }));
+  ['paper', 'fitMode'].forEach(id => $(id).addEventListener('change', drawTilePreview));
+  $('printTiles').addEventListener('click', () => {
+    const p = buildTiles();
+    $('pageStyle').textContent = `@page { size: ${p.pp.css} ${p.pLand ? 'landscape' : 'portrait'}; margin: ${MARGIN}in; }`;
+    document.body.dataset.print = 'tiles';
+    requestAnimationFrame(() => window.print());
+  });
 
   /* ---------- downloads + printing ---------- */
   function bigReference() {
@@ -698,12 +853,12 @@ if (typeof module !== 'undefined') module.exports = Core;
     set($('tplCv'), $('pTemplateImg')); set(bigReference(), $('pRefImg'));
     const land = r.w > r.h * 1.08;
     document.body.classList.toggle('land', land);
-    $('pageStyle').textContent = `@page { size: ${land ? 'landscape' : 'portrait'}; margin: 0.5in; }`;
     $('pSwatches').innerHTML = r.palette.map((c, i) =>
       `<div class="psw"><span class="num">${i + 1}</span><span class="pchip" style="border-color:${c.hex}"></span><span>${c.name}<small>${c.hex}</small></span></div>`).join('');
   }
   function print(what) {
     document.body.dataset.print = what;
+    $('pageStyle').textContent = `@page { size: ${document.body.classList.contains('land') ? 'landscape' : 'portrait'}; margin: 0.5in; }`;
     const imgs = [$('pTemplateImg'), $('pRefImg')];
     Promise.all(imgs.map(i => i.complete && i.naturalWidth ? 0 : new Promise(res => { i.onload = i.onerror = res; }))).then(() => window.print());
   }

@@ -6,6 +6,8 @@ Upload one of your photos, choose how many colors you want to paint with, and ge
 - **matching swatches**, numbered, with a color name and hex code
 - a **printable paint-by-number template**: outlines with a number in every shape, plus a color key page
 
+- **canvas-size printing**: enter your canvas size (say 16 × 20 in) and the template is split across regular Letter or A4 sheets at true size, labeled A1, B1, … so you can tape them together and trace through carbon paper
+
 Everything runs in the browser. Photos never leave your device.
 
 ## Use it
