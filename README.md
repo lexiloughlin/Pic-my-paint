@@ -16,9 +16,10 @@ Open `index.html`, or visit the GitHub Pages site for this repo once Pages is tu
 (Settings → Pages → Deploy from a branch → `main`).
 
 1. Drop in a photo (or try the sample picture). For a print, poster or illustration that's already made, switch **Picture type** to **Artwork or print**: it keeps flat colors and crisp edges and picks the number of colors for you.
-2. Pick the number of colors (3 to 30) and a detail level.
-3. Click a swatch to see where that color goes.
-4. Print the template and color key, or download them as PNGs.
+2. Photo of a painting or print on a wall or table? Drag the four dots in **Crop to the artwork** onto its corners and click **Crop + straighten** to cut out the background and flatten the angle.
+3. Pick the number of colors (3 to 30) and a detail level.
+4. Click a swatch to see where that color goes.
+5. Print the template and color key, or download them as PNGs.
 
 ## How it works
 

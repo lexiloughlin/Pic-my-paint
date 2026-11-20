@@ -110,6 +110,7 @@
 
   .opts { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; font-size: 14px; }
   .opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  #cropCv { width: auto; max-width: 100%; max-height: 560px; margin: 0 auto; touch-action: none; cursor: grab; }
   .tilebox { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
   .tilebox h3 { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 19px; margin: 0 0 4px; }
   .tilegrid { display: grid; grid-template-columns: minmax(250px, 1fr) 1.2fr; gap: 22px; margin-top: 14px; align-items: start; }
@@ -199,6 +200,18 @@
       </div>
       <div id="status" aria-live="polite">Add a photo to get started.</div>
     </div>
+  </section>
+
+  <section class="card" id="cropCard" hidden>
+    <div class="cardhead">
+      <h2>Crop to the artwork <span style="font:400 14px -apple-system,sans-serif;color:var(--soft)">(optional)</span></h2>
+      <div class="actions">
+        <button class="btn" id="cropApply">Crop + straighten</button>
+        <button class="btn ghost" id="cropReset">Use the whole picture</button>
+      </div>
+    </div>
+    <div class="hint" style="margin:0 0 12px">Photo of a painting or print? Drag the four dots onto its corners so the wall and background are left out. It also flattens a picture taken at an angle.</div>
+    <canvas id="cropCv"></canvas>
   </section>
 
   <div id="results" hidden>
@@ -400,6 +413,29 @@ const Core = (() => {
     return out.subarray(0, c);
   }
 
+  /* Artwork: fold together shades that differ mostly by lighting (a shadow across the paper, glare),
+     so one painted color doesn't come out as three. Brightness counts half as much as hue. */
+  const NEAR = 64;
+  const near = (L, A, B) => 0.25 * L * L + A * A + B * B;
+  function mergeClose(labels, lab, n, k) {
+    const m = new Float64Array(k * 3), c = new Float64Array(k), to = new Int32Array(k);
+    for (let i = 0; i < n; i++) { const l = labels[i]; m[l * 3] += lab[i * 3]; m[l * 3 + 1] += lab[i * 3 + 1]; m[l * 3 + 2] += lab[i * 3 + 2]; c[l]++; }
+    for (let j = 0; j < k; j++) { to[j] = j; if (c[j]) { m[j * 3] /= c[j]; m[j * 3 + 1] /= c[j]; m[j * 3 + 2] /= c[j]; } }
+    for (;;) {
+      let bi = -1, bj = -1, bd = NEAR;
+      for (let i = 0; i < k; i++) if (c[i]) for (let j = i + 1; j < k; j++) if (c[j]) {
+        const d = near(m[i * 3] - m[j * 3], m[i * 3 + 1] - m[j * 3 + 1], m[i * 3 + 2] - m[j * 3 + 2]);
+        if (d < bd) { bd = d; bi = i; bj = j; }
+      }
+      if (bi < 0) break;
+      const t = c[bi] + c[bj];
+      for (let q = 0; q < 3; q++) m[bi * 3 + q] = (m[bi * 3 + q] * c[bi] + m[bj * 3 + q] * c[bj]) / t;
+      c[bi] = t; c[bj] = 0;
+      for (let j = 0; j < k; j++) if (to[j] === bj) to[j] = bi;
+    }
+    for (let i = 0; i < n; i++) labels[i] = to[labels[i]];
+  }
+
   /* Roughly how many distinct flat colors a piece of artwork uses. */
   function estimateColors(rgba, w, h) {
     const n = w * h, lab = new Float32Array(n * 3);
@@ -415,7 +451,7 @@ const Core = (() => {
     for (const b of list) {
       const L = b[1] / b[0], A = b[2] / b[0], B = b[3] / b[0];
       let hit = null;
-      for (const f of found) { const d = (f.L - L) ** 2 + (f.A - A) ** 2 + (f.B - B) ** 2; if (d < 100) { hit = f; break; } }
+      for (const f of found) { if (near(f.L - L, f.A - A, f.B - B) < NEAR * 1.6) { hit = f; break; } }
       if (hit) hit.n += b[0]; else found.push({ L, A, B, n: b[0] });
     }
     const count = found.filter(f => f.n >= flat.length * 0.004).length;
@@ -574,6 +610,7 @@ const Core = (() => {
     let flat = null;
     if (opts.art) { flat = flatPixels(lab, w, h); if (flat.length < n * 0.05) flat = null; }
     let { labels, k } = quantize(lab, n, opts.colors, flat);
+    if (opts.art) mergeClose(labels, lab, n, k);
     labels = modeFilter(labels, w, h, k, opts.radius);
     labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
     mergeSmall(labels, w, h, k, Math.max(12, Math.round(n * opts.minFrac)));
@@ -618,7 +655,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     medium:   { size: 820, radius: 1, minFrac: 1 / 8000 },
     detailed: { size: 1000, radius: 1, minFrac: 1 / 16000 }
   };
-  const state = { src: null, detail: 'medium', kind: 'photo', auto: true, result: null, highlight: -1, urls: [] };
+  const state = { src: null, orig: null, detail: 'medium', kind: 'photo', auto: true, result: null, highlight: -1, urls: [] };
 
   const status = (msg, err) => { $('status').textContent = msg; $('status').classList.toggle('err', !!err); };
 
@@ -627,7 +664,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     if (!file) return;
     if (!file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name)) { status('That file is not a picture. Try a JPG or PNG.', true); return; }
     const url = URL.createObjectURL(file), img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); state.src = img; state.auto = true; generate(); };
+    img.onload = () => { URL.revokeObjectURL(url); openCrop(img); };
     img.onerror = () => { URL.revokeObjectURL(url); status('This browser could not open that photo. If it is an iPhone HEIC photo, try Safari or save it as a JPG first.', true); };
     img.src = url;
   }
@@ -640,7 +677,87 @@ if (typeof module !== 'undefined') module.exports = Core;
   drop.addEventListener('drop', e => loadFile(e.dataTransfer.files[0]));
   window.addEventListener('paste', e => { const f = [...(e.clipboardData?.files || [])][0]; if (f) loadFile(f); });
 
-  $('sample').addEventListener('click', () => { state.src = sampleScene(); generate(); });
+  $('sample').addEventListener('click', () => openCrop(sampleScene()));
+
+  /* ---------- crop + straighten ---------- */
+  const crop = { pts: null, drag: -1 };
+  const freshPts = () => [[.04, .04], [.96, .04], [.96, .96], [.04, .96]];   // TL, TR, BR, BL as fractions of the picture
+  const dims = img => [img.naturalWidth || img.width, img.naturalHeight || img.height];
+  function openCrop(img) {
+    state.orig = img; state.src = img; state.auto = true;
+    crop.pts = freshPts(); $('cropCard').hidden = false;
+    drawCrop(); generate();
+  }
+  function drawCrop() {
+    const cv = $('cropCv'), [iw, ih] = dims(state.orig), sc = 900 / Math.max(iw, ih);
+    const W = Math.round(iw * sc), H = Math.round(ih * sc);
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const g = cv.getContext('2d'), u = W / (cv.getBoundingClientRect().width || W);
+    g.imageSmoothingQuality = 'high'; g.drawImage(state.orig, 0, 0, W, H);
+    const P = crop.pts.map(([x, y]) => [x * W, y * H]);
+    g.fillStyle = 'rgba(20,18,15,.55)'; g.beginPath(); g.rect(0, 0, W, H);
+    g.moveTo(P[0][0], P[0][1]); for (const i of [3, 2, 1]) g.lineTo(P[i][0], P[i][1]); g.closePath(); g.fill('evenodd');
+    g.strokeStyle = '#fff'; g.lineWidth = 2 * u; g.beginPath();
+    g.moveTo(P[0][0], P[0][1]); for (const i of [1, 2, 3]) g.lineTo(P[i][0], P[i][1]); g.closePath(); g.stroke();
+    for (const [x, y] of P) { g.beginPath(); g.arc(x, y, 10 * u, 0, 7); g.fillStyle = '#d9482b'; g.fill(); g.lineWidth = 3 * u; g.stroke(); }
+  }
+  const cropCv = $('cropCv');
+  const cropPos = e => { const r = cropCv.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+  cropCv.addEventListener('pointerdown', e => {
+    const [x, y] = cropPos(e); let best = 0, bd = 9;
+    crop.pts.forEach(([px, py], i) => { const d = (px - x) ** 2 + (py - y) ** 2; if (d < bd) { bd = d; best = i; } });
+    crop.drag = best; crop.pts[best] = [x, y]; cropCv.setPointerCapture(e.pointerId); drawCrop(); e.preventDefault();
+  });
+  cropCv.addEventListener('pointermove', e => { if (crop.drag < 0) return; crop.pts[crop.drag] = cropPos(e); drawCrop(); });
+  ['pointerup', 'pointercancel'].forEach(t => cropCv.addEventListener(t, () => { crop.drag = -1; }));
+  window.addEventListener('resize', () => { if (state.orig) drawCrop(); });
+
+  /* 3x3 perspective map sending the output rectangle onto the four chosen corners. */
+  function homography(from, to) {
+    const A = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = from[i], [X, Y] = to[i];
+      A.push([x, y, 1, 0, 0, 0, -X * x, -X * y, X]); A.push([0, 0, 0, x, y, 1, -Y * x, -Y * y, Y]);
+    }
+    for (let c = 0; c < 8; c++) {
+      let piv = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      [A[c], A[piv]] = [A[piv], A[c]];
+      if (Math.abs(A[c][c]) < 1e-10) return null;
+      for (let r = 0; r < 8; r++) if (r !== c) { const f = A[r][c] / A[c][c]; for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k]; }
+    }
+    return A.map((row, i) => row[8] / row[i]);
+  }
+  function straighten() {
+    const [iw, ih] = dims(state.orig), sc = Math.min(1, 2000 / Math.max(iw, ih));
+    const sw = Math.round(iw * sc), sh = Math.round(ih * sc);
+    const sc0 = document.createElement('canvas'); sc0.width = sw; sc0.height = sh;
+    const sg = sc0.getContext('2d', { willReadFrequently: true });
+    sg.fillStyle = '#fff'; sg.fillRect(0, 0, sw, sh); sg.drawImage(state.orig, 0, 0, sw, sh);
+    const src = sg.getImageData(0, 0, sw, sh).data;
+    const P = crop.pts.map(([x, y]) => [x * (sw - 1), y * (sh - 1)]), len = (a, b) => Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]);
+    let W = (len(0, 1) + len(3, 2)) / 2, H = (len(0, 3) + len(1, 2)) / 2;
+    const k = Math.min(1, 1600 / Math.max(W, H)); W = Math.max(20, Math.round(W * k)); H = Math.max(20, Math.round(H * k));
+    const h = homography([[0, 0], [W, 0], [W, H], [0, H]], P);
+    if (!h) return null;
+    const out = document.createElement('canvas'); out.width = W; out.height = H;
+    const og = out.getContext('2d'), im = og.createImageData(W, H), d = im.data;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const q = h[6] * x + h[7] * y + 1;
+      const fx = Math.min(sw - 1.001, Math.max(0, (h[0] * x + h[1] * y + h[2]) / q)), fy = Math.min(sh - 1.001, Math.max(0, (h[3] * x + h[4] * y + h[5]) / q));
+      const x0 = fx | 0, y0 = fy | 0, ax = fx - x0, ay = fy - y0, a = (y0 * sw + x0) * 4, b = a + sw * 4, o = (y * W + x) * 4;
+      for (let c = 0; c < 3; c++) d[o + c] = (src[a + c] * (1 - ax) + src[a + 4 + c] * ax) * (1 - ay) + (src[b + c] * (1 - ax) + src[b + 4 + c] * ax) * ay;
+      d[o + 3] = 255;
+    }
+    og.putImageData(im, 0, 0);
+    return out;
+  }
+  $('cropApply').addEventListener('click', () => {
+    const out = straighten();
+    if (!out) { status('Those corners overlap. Spread the four dots out and try again.', true); return; }
+    state.src = out; state.auto = true; generate();
+    $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('cropReset').addEventListener('click', () => { crop.pts = freshPts(); state.src = state.orig; state.auto = true; drawCrop(); generate(); });
 
   function sampleScene() {
     const c = document.createElement('canvas'); c.width = 900; c.height = 640;
