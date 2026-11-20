@@ -15,7 +15,7 @@ Everything runs in the browser. Photos never leave your device.
 Open `index.html`, or visit the GitHub Pages site for this repo once Pages is turned on
 (Settings → Pages → Deploy from a branch → `main`).
 
-1. Drop in a photo (or try the sample picture).
+1. Drop in a photo (or try the sample picture). For a print, poster or illustration that's already made, switch **Picture type** to **Artwork or print**: it keeps flat colors and crisp edges and picks the number of colors for you.
 2. Pick the number of colors (3 to 30) and a detail level.
 3. Click a swatch to see where that color goes.
 4. Print the template and color key, or download them as PNGs.

@@ -161,14 +161,14 @@
 <div class="wrap">
   <header>
     <h1>🖌️ Paint My Photo</h1>
-    <p>Upload one of your photos, choose how many colors you want to paint with, and get a simplified reference image, matching swatches, and a printable paint-by-number template.</p>
+    <p>Upload one of your photos, or a print or artwork that's already made, choose how many colors you want to paint with, and get a simplified reference image, matching swatches, and a printable paint-by-number template.</p>
   </header>
 
   <section class="card controls">
     <div>
       <div id="drop" tabindex="0" role="button" aria-label="Upload a photo">
         <div class="big">🖼️</div>
-        <div><b>Drop a photo here</b> or click to choose one</div>
+        <div><b>Drop a photo or artwork here</b> or click to choose one</div>
         <small>Your photo stays on your device. Nothing is uploaded anywhere.</small>
       </div>
       <input id="file" type="file" accept="image/*" hidden>
@@ -176,9 +176,17 @@
     </div>
     <div>
       <div class="field">
+        <label class="title"><span>Picture type</span></label>
+        <div class="seg" id="kind">
+          <button data-k="photo" aria-pressed="true">Photo</button>
+          <button data-k="art" aria-pressed="false">Artwork or print</button>
+        </div>
+        <div class="hint" id="kindHint">For photos from your camera or phone.</div>
+      </div>
+      <div class="field">
         <label class="title" for="colors"><span>Number of colors</span><span class="count" id="colorsOut">12</span></label>
-        <input id="colors" type="range" min="3" max="30" value="12">
-        <div class="ticks"><span>3 · bold</span><span>30 · realistic</span></div>
+        <input id="colors" type="range" min="2" max="30" value="12">
+        <div class="ticks"><span>2 · bold</span><span>30 · realistic</span></div>
       </div>
       <div class="field">
         <label class="title"><span>Detail</span></label>
@@ -200,7 +208,7 @@
         <div class="actions"><button class="btn ghost" id="dlRef">Download reference</button></div>
       </div>
       <div class="pair">
-        <figure><figcaption>Your photo</figcaption><canvas id="origCv"></canvas></figure>
+        <figure><figcaption>Your picture</figcaption><canvas id="origCv"></canvas></figure>
         <figure><figcaption id="refCap">Simplified</figcaption><canvas id="refCv"></canvas></figure>
       </div>
     </section>
@@ -320,12 +328,13 @@ const Core = (() => {
   }
 
   /* k-means in Lab space. Returns per-pixel labels and how many clusters were made. */
-  function quantize(lab, n, k) {
+  function quantize(lab, n, k, only) {
     const rand = rng(1234567);
-    const step = Math.max(1, Math.floor(n / 40000));
-    const m = Math.ceil(n / step);
+    const total = only ? only.length : n;             // only: only learn colors from these pixels
+    const step = Math.max(1, Math.floor(total / 40000));
+    const m = Math.ceil(total / step);
     const s = new Float32Array(m * 3);
-    for (let i = 0, p = 0; i < m; i++, p += step) { s[i * 3] = lab[p * 3]; s[i * 3 + 1] = lab[p * 3 + 1]; s[i * 3 + 2] = lab[p * 3 + 2]; }
+    for (let i = 0; i < m; i++) { const p = only ? only[i * step] : i * step; s[i * 3] = lab[p * 3]; s[i * 3 + 1] = lab[p * 3 + 1]; s[i * 3 + 2] = lab[p * 3 + 2]; }
 
     const cen = new Float32Array(k * 3);
     const d2 = new Float32Array(m).fill(Infinity);
@@ -377,6 +386,40 @@ const Core = (() => {
       labels[i] = best;
     }
     return { labels, k };
+  }
+
+  /* Pixels sitting in flat color (not on a soft edge between two colors). */
+  function flatPixels(lab, w, h) {
+    const out = new Int32Array(w * h); let c = 0;
+    for (let y = 0; y < h - 1; y++) for (let x = 0; x < w - 1; x++) {
+      const p = (y * w + x) * 3, q = p + 3, r = p + w * 3;
+      const a = lab[p] - lab[q], b = lab[p + 1] - lab[q + 1], d = lab[p + 2] - lab[q + 2];
+      const e = lab[p] - lab[r], f2 = lab[p + 1] - lab[r + 1], g = lab[p + 2] - lab[r + 2];
+      if (a * a + b * b + d * d < 20 && e * e + f2 * f2 + g * g < 20) out[c++] = y * w + x;
+    }
+    return out.subarray(0, c);
+  }
+
+  /* Roughly how many distinct flat colors a piece of artwork uses. */
+  function estimateColors(rgba, w, h) {
+    const n = w * h, lab = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) rgb2lab(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], lab, i * 3);
+    const flat = flatPixels(lab, w, h), bins = new Map();
+    if (flat.length < n * 0.05) return 12;
+    for (let i = 0; i < flat.length; i++) {
+      const p = flat[i] * 3, key = ((lab[p] / 6 | 0) * 64 + ((lab[p + 1] + 128) / 6 | 0)) * 64 + ((lab[p + 2] + 128) / 6 | 0);
+      let b = bins.get(key); if (!b) bins.set(key, b = [0, 0, 0, 0]);
+      b[0]++; b[1] += lab[p]; b[2] += lab[p + 1]; b[3] += lab[p + 2];
+    }
+    const list = [...bins.values()].sort((x, y) => y[0] - x[0]), found = [];
+    for (const b of list) {
+      const L = b[1] / b[0], A = b[2] / b[0], B = b[3] / b[0];
+      let hit = null;
+      for (const f of found) { const d = (f.L - L) ** 2 + (f.A - A) ** 2 + (f.B - B) ** 2; if (d < 100) { hit = f; break; } }
+      if (hit) hit.n += b[0]; else found.push({ L, A, B, n: b[0] });
+    }
+    const count = found.filter(f => f.n >= flat.length * 0.004).length;
+    return Math.max(2, Math.min(30, count));
   }
 
   /* Replace each pixel with the most common label around it: smooths speckle into paintable shapes. */
@@ -528,7 +571,9 @@ const Core = (() => {
   function process(rgba, w, h, opts) {
     const n = w * h, lab = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) rgb2lab(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], lab, i * 3);
-    let { labels, k } = quantize(lab, n, opts.colors);
+    let flat = null;
+    if (opts.art) { flat = flatPixels(lab, w, h); if (flat.length < n * 0.05) flat = null; }
+    let { labels, k } = quantize(lab, n, opts.colors, flat);
     labels = modeFilter(labels, w, h, k, opts.radius);
     labels = modeFilter(labels, w, h, k, Math.max(1, opts.radius - 1));
     mergeSmall(labels, w, h, k, Math.max(12, Math.round(n * opts.minFrac)));
@@ -537,6 +582,11 @@ const Core = (() => {
     const sums = new Float64Array(k * 3), cnt = new Int32Array(k);
     for (let i = 0; i < n; i++) { const l = labels[i]; sums[l * 3] += lab[i * 3]; sums[l * 3 + 1] += lab[i * 3 + 1]; sums[l * 3 + 2] += lab[i * 3 + 2]; cnt[l]++; }
     const used = [];
+    if (flat) {                                       // artwork: take each color from its flat areas so soft edges don't muddy it
+      const fs = new Float64Array(k * 3), fc = new Int32Array(k);
+      for (let j = 0; j < flat.length; j++) { const i = flat[j], l = labels[i]; fs[l * 3] += lab[i * 3]; fs[l * 3 + 1] += lab[i * 3 + 1]; fs[l * 3 + 2] += lab[i * 3 + 2]; fc[l]++; }
+      for (let c = 0; c < k; c++) if (fc[c] && cnt[c]) { sums[c * 3] = fs[c * 3] / fc[c] * cnt[c]; sums[c * 3 + 1] = fs[c * 3 + 1] / fc[c] * cnt[c]; sums[c * 3 + 2] = fs[c * 3 + 2] / fc[c] * cnt[c]; }
+    }
     for (let c = 0; c < k; c++) if (cnt[c]) used.push({ old: c, L: sums[c * 3] / cnt[c], a: sums[c * 3 + 1] / cnt[c], b: sums[c * 3 + 2] / cnt[c], n: cnt[c] });
     used.sort((p, q) => q.L - p.L);
     const remap = new Uint8Array(k);
@@ -549,7 +599,7 @@ const Core = (() => {
     return { w, h, labels, palette, regions: regionLabels(labels, w, h) };
   }
 
-  return { process, components, colorName, rgb2lab, lab2rgb };
+  return { process, estimateColors, components, colorName, rgb2lab, lab2rgb };
 })();
 if (typeof module !== 'undefined') module.exports = Core;
 </script>
@@ -562,7 +612,13 @@ if (typeof module !== 'undefined') module.exports = Core;
     medium:   { size: 620, radius: 3, minFrac: 1 / 1800 },
     detailed: { size: 800, radius: 2, minFrac: 1 / 4500 }
   };
-  const state = { src: null, detail: 'medium', result: null, highlight: -1, urls: [] };
+  /* Artwork mode: sharper, less smoothing, so flat colors and thin shapes survive. */
+  const DETAIL_ART = {
+    simple:   { size: 620, radius: 2, minFrac: 1 / 2500 },
+    medium:   { size: 820, radius: 1, minFrac: 1 / 8000 },
+    detailed: { size: 1000, radius: 1, minFrac: 1 / 16000 }
+  };
+  const state = { src: null, detail: 'medium', kind: 'photo', auto: true, result: null, highlight: -1, urls: [] };
 
   const status = (msg, err) => { $('status').textContent = msg; $('status').classList.toggle('err', !!err); };
 
@@ -571,7 +627,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     if (!file) return;
     if (!file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name)) { status('That file is not a picture. Try a JPG or PNG.', true); return; }
     const url = URL.createObjectURL(file), img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); state.src = img; generate(); };
+    img.onload = () => { URL.revokeObjectURL(url); state.src = img; state.auto = true; generate(); };
     img.onerror = () => { URL.revokeObjectURL(url); status('This browser could not open that photo. If it is an iPhone HEIC photo, try Safari or save it as a JPG first.', true); };
     img.src = url;
   }
@@ -613,7 +669,16 @@ if (typeof module !== 'undefined') module.exports = Core;
   /* ---------- controls ---------- */
   let timer = 0;
   const later = () => { clearTimeout(timer); timer = setTimeout(generate, 250); };
-  $('colors').addEventListener('input', e => { $('colorsOut').textContent = e.target.value; later(); });
+  $('colors').addEventListener('input', e => { $('colorsOut').textContent = e.target.value; state.auto = false; later(); });
+  $('kind').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.kind = b.dataset.k; state.auto = true;
+    [...$('kind').children].forEach(x => x.setAttribute('aria-pressed', x === b));
+    $('kindHint').textContent = state.kind === 'art'
+      ? 'For a print, poster, illustration or drawing that is already made. Keeps its flat colors and crisp edges, and picks the number of colors for you.'
+      : 'For photos from your camera or phone.';
+    later();
+  });
   $('detail').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
     state.detail = b.dataset.d;
@@ -628,7 +693,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     status('Mixing your colors…');
     setTimeout(() => {
       try {
-        const d = DETAIL[state.detail], img = state.src;
+        const art = state.kind === 'art', d = (art ? DETAIL_ART : DETAIL)[state.detail], img = state.src;
         const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
         const sc = d.size / Math.max(iw, ih);
         const w = Math.max(40, Math.round(iw * sc)), h = Math.max(40, Math.round(ih * sc));
@@ -637,12 +702,15 @@ if (typeof module !== 'undefined') module.exports = Core;
         og.fillStyle = '#fff'; og.fillRect(0, 0, w, h);
         og.imageSmoothingQuality = 'high'; og.drawImage(img, 0, 0, w, h);
         const data = og.getImageData(0, 0, w, h).data;
-        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac });
+        let found = 0;
+        if (art && state.auto) { found = Core.estimateColors(data, w, h); $('colors').value = found; $('colorsOut').textContent = found; }
+        state.auto = false;
+        state.result = Core.process(data, w, h, { colors: +$('colors').value, radius: d.radius, minFrac: d.minFrac, art });
         state.highlight = -1;
         $('results').hidden = false;
         drawReference(); drawSwatches(); drawTemplate(); refreshPrintImages();
         const r = state.result;
-        status(`Done: ${r.palette.length} colors, ${r.regions.length} shapes to paint.`);
+        status((found ? `Found about ${found} colors in this artwork (move the slider to change it). ` : '') + `Done: ${r.palette.length} colors, ${r.regions.length} shapes to paint.`);
       } catch (err) { console.error(err); status('Something went wrong reading that photo. Try another one.', true); }
     }, 30);
   }
