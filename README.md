@@ -12,7 +12,7 @@ Upload one of your photos, choose how many colors you want to paint with, and ge
 
 Everything runs in the browser. Photos never leave your device.
 
-**▶ Try it live: [lexiloughlin.github.io/pic-my-paint](https://lexiloughlin.github.io/pic-my-paint/)**
+**▶ Try it live: [lexiloughlin.github.io/Pic-my-paint](https://lexiloughlin.github.io/Pic-my-paint/)**
 
 ## Use it
 
